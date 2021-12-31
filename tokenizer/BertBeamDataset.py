@@ -10,8 +10,7 @@ from tqdm import tqdm
 import tensorflow.compat.v2 as tf
 import sys
 
-import tokenizers
-import datasets
+
 
 _DESCRIPTION = """
 Bert(wikipedia_en + bookcorpus) Dataset
@@ -23,15 +22,14 @@ Wikiepedia_en + bookcorpus from huggingface
 """
 _TOKENIZER_JSON_PATH = './tokenizer.json'
 _VOCAB_SIZE = 30_522
-_DUPE_FACOTR = 8
+_DUPE_FACOTR = 1
 _MAX_SEQUENCE_LENGTH = 128
 _MAX_PREDICTIONS_PER_SEQ = 20
 _MASKED_LM_PROB = 0.15
 
 
-class Bert(tfds.core.BeamBasedBuilder):
+class BertBeamDataset(tfds.core.GeneratorBasedBuilder):
     # DatasetBuilder for Bert dataset.
-
     VERSION = tfds.core.Version('1.0.0')
     RELEASE_NOTES = {
         '1.0.0': 'Bert(wikipedia_en + bookcorpus'
@@ -60,19 +58,22 @@ class Bert(tfds.core.BeamBasedBuilder):
 
     
     def _split_generators(self, dl_manager):
+        import datasets
+        import tokenizers
         
         bookcorpus_dataset = datasets.load_dataset(
-            'bookcorpus', data_dir='gs://justhungryman/tfds/downloads/manual'
+            'bookcorpus'
         )
 
-        wiki_dataset = datasets.load_dataset(
-            'wikipedia', '20200501.en', data_dir='gs://justhungryman/tfds/downloads/manual'
-        )
-        wiki_dataset = wiki_dataset.remove_columns("title")
+        # wiki_dataset = datasets.load_dataset(
+        #     'wikipedia', '20200501.en'
+        # )
+        # wiki_dataset = wiki_dataset.remove_columns("title")
 
-        assert bookcorpus_dataset['train'].features.type == wiki_dataset['train'].features.type
-
-        bert_dataset = datasets.concatenate_datasets([bookcorpus_dataset['train'], wiki_dataset['train']])
+        # assert bookcorpus_dataset['train'].features.type == wiki_dataset['train'].features.type
+        bert_dataset = bookcorpus_dataset['train']
+        bert_dataset = bert_dataset[:204800]
+        # bert_dataset = datasets.concatenate_datasets([bookcorpus_dataset['train'], wiki_dataset['train']])
 
         if not os.path.isfile(_TOKENIZER_JSON_PATH):
             print(f"Can not find pretrained tokenizer.")
@@ -100,6 +101,7 @@ class Bert(tfds.core.BeamBasedBuilder):
 
             print(f"Finish training tokenizer")
 
+        print(f"Load Tokenizer")
         tokenizer = tokenizers.Tokenizer.from_file(_TOKENIZER_JSON_PATH)
         tokenizer.enable_truncation(
             max_length=_MAX_SEQUENCE_LENGTH
@@ -118,8 +120,10 @@ class Bert(tfds.core.BeamBasedBuilder):
             ]
         )
 
-        bert_dataset = datasets.concatenate_datasets([bert_dataset] * _DUPE_FACOTR)
+        print(f"Duplicate dataset: {len(bert_dataset) * _DUPE_FACOTR}")
+        # bert_dataset = datasets.concatenate_datasets([bert_dataset] * _DUPE_FACOTR)
 
+        print(f"Generate..")
         return {
             'train': self._generate_examples(ds=bert_dataset, tokenizer=tokenizer),
             # 'validation': self._generate_examples(paths=data['validation'], synsets=synsets)
@@ -131,6 +135,30 @@ class Bert(tfds.core.BeamBasedBuilder):
         max_len = len(ds)
 
         def _process_example(ds):
+            # https://d2l.ai/chapter_natural-language-processing-pretraining/bert-dataset.html
+            def _replace_mlm_tokens(self, tokens, candidate_pred_positions, num_mlm_preds, tokenizer):
+                mlm_input_tokens = [token for token in tokens]
+                pred_positions_and_labels = []
+                random.shuffle(candidate_pred_positions)
+
+                for mlm_pred_position in candidate_pred_positions:
+                    if len(pred_positions_and_labels) >= num_mlm_preds:
+                        break
+                    masked_token = None
+
+                    if random.random() < 0.8:
+                        masked_token = '[MASK]'
+                    else:
+                        if random.random() < 0.5:
+                            masked_token = tokens[mlm_pred_position]
+                        else:
+                            # Except [UNK], [CLS], [SEP], [PAD], [MASK]
+                            rand_token_id = random.randint(5, _VOCAB_SIZE)
+                            masked_token = tokenizer.id_to_token(rand_token_id)
+                    mlm_input_tokens[mlm_pred_position] = masked_token
+                    pred_positions_and_labels.append((mlm_pred_position, tokens[mlm_pred_position]))
+
+                return mlm_input_tokens, pred_positions_and_labels
 
             text = ds[i]['text']
             
@@ -172,13 +200,17 @@ class Bert(tfds.core.BeamBasedBuilder):
                 'input_mask': input_mask,
                 'segment_ids': segment_ids,
                 'masked_lm_positions': mlm_pred_positions,
-                'masked_lm_ids': mlm_pred_labels,
+                'masked_lm_ids': mlm_pred_labels,   
                 'masked_lm_weights': mlm_weights,
                 'next_sentence_labels': [next_sentence_labels]
             }
             return text, record
+
         beam = tfds.core.lazy_imports.apache_beam
-        return beam.Create(ds) | beam.Map(_process_example)
+        return (
+            beam.Create(ds) 
+            | beam.Map(_process_example)
+        )
         # for i, data in tqdm(enumerate(ds), total=max_len):
         #     text = ds[i]['text']
             
@@ -247,47 +279,30 @@ class Bert(tfds.core.BeamBasedBuilder):
         #     except Exception as e:
         #         continue
 
-    # https://d2l.ai/chapter_natural-language-processing-pretraining/bert-dataset.html
-    def _replace_mlm_tokens(self, tokens, candidate_pred_positions, num_mlm_preds, tokenizer):
-        mlm_input_tokens = [token for token in tokens]
-        pred_positions_and_labels = []
-        random.shuffle(candidate_pred_positions)
-
-        for mlm_pred_position in candidate_pred_positions:
-            if len(pred_positions_and_labels) >= num_mlm_preds:
-                break
-            masked_token = None
-
-            if random.random() < 0.8:
-                masked_token = '[MASK]'
-            else:
-                if random.random() < 0.5:
-                    masked_token = tokens[mlm_pred_position]
-                else:
-                    # Except [UNK], [CLS], [SEP], [PAD], [MASK]
-                    rand_token_id = random.randint(5, _VOCAB_SIZE)
-                    masked_token = tokenizer.id_to_token(rand_token_id)
-            mlm_input_tokens[mlm_pred_position] = masked_token
-            pred_positions_and_labels.append((mlm_pred_position, tokens[mlm_pred_position]))
-
-        return mlm_input_tokens, pred_positions_and_labels
+    
          
 
         
 
 
-if __name__ == '__main__':
-    test = Bert()
-    # tfds.enable_progress_bar()
+# if __name__ == '__main__':
+#     # test = Bert()
+#     tfds.enable_progress_bar()
 
-    # if not os.path.exists('gs://justhungryman/tfds'):
-    #     os.makedirs('./data')
+#     # if not os.path.exists('gs://justhungryman/tfds'):
+#     #     os.makedirs('./data')
+#     flags = ['--runner=DataflowRunner', '--project=justhungryman', '--job_name=bert-gen', '--staging_location=gs://justhungryman/binaries', '--temp_location=gs://justhungryman/temp', 'requirements_file=/tmp/beam_requirements.txt']
+#     beam = tfds.core.lazy_imports.apache_beam
+#     dl_config = tfds.download.DownloadConfig(
+#         beam_options=beam.options.pipeline_options.PipelineOptions(flags=flags, pipeline_type_check=False)
+#     )
 
-    builder = tfds.builder('bert', data_dir='gs://justhungryman/tfds', try_gcs=False)
-    builder.download_and_prepare(
-        download_config=tfds.download.DownloadConfig(manual_dir='gs://justhungryman/tfds')
-    )
-    ds = builder.as_dataset(split='train')
-    print(builder.info)
-    print(builder.info.splits['train'].num_examples)
+#     builder = tfds.builder('jun', data_dir='gs://justhungryman/tfds', try_gcs=False)
+#     builder.download_and_prepare(
+#         download_dir='gs://justhungryman/tfds',
+#         download_config=dl_config
+#     )
+#     ds = builder.as_dataset(split='train')
+#     print(builder.info)
+#     print(builder.info.splits['train'].num_examples)
 

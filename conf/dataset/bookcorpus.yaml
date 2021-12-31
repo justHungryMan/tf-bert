@@ -1,0 +1,14 @@
+data_dir: gs://justhungryman/tf-records
+type: tensorflow_records
+batch_size: ???
+train:
+  split: "train"  # 49k
+  drop_remainder: True
+
+  repeat: True
+  shuffle: True
+  batch_size: ???
+  
+  preprocess: ???
+  postprocess: ???
+  

@@ -3,3 +3,5 @@ tensorflow-datasets
 transformers
 datasets
 apache_beam
+google-cloud-bigquery
+google-cloud-bigquery-storage

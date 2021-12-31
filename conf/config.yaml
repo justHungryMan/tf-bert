@@ -1,0 +1,37 @@
+defaults:
+  - _self_
+  - architecture: bert-b16.yaml
+  - dataset: bookcorpus.yaml
+  - loss: ce.yaml
+  - optimizer: sgd.yaml
+  - scheduler: warmup_cosine.yaml
+  - callbacks: upstream.yaml
+
+  - experiment: null
+  - hparams_search: null
+  
+  - hydra: defaults.yaml
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+
+base:
+  project_name: Bert
+  mode: train_eval
+  # TPU options
+  env:
+    mode: tpu
+    gcp_project: {your_project}
+    tpu_name: node-1
+    tpu_zone: europe-west4-a
+    mixed_precision: True
+  # GPU options
+  # env:
+  #   mode: gpu
+  #   mixed_precision: True
+  seed: '0xC0FFEE'
+  save_dir: gs://justhungryman/${base.project_name}
+  debug: True
+  resume: False
+  print_config: True
+  ignore_warning: True
