@@ -17,11 +17,11 @@ defaults:
 
 base:
   project_name: Bert
-  mode: train_eval
+  mode: train
   # TPU options
   env:
     mode: tpu
-    gcp_project: {your_project}
+    gcp_project: justhungryman
     tpu_name: node-1
     tpu_zone: europe-west4-a
     mixed_precision: True

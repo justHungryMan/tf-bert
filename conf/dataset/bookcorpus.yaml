@@ -1,4 +1,4 @@
-data_dir: gs://justhungryman/tf-records
+data_dir: gs://justhungryman_tpu5/tf_records
 type: tensorflow_records
 batch_size: ???
 train:

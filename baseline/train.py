@@ -33,6 +33,7 @@ class Trainer:
 
         return {
             "train": train_dataset,
+            "train_info": dataset["train_info"]
         }
 
     def build_model(self, steps_per_epoch, num_classes=1000):
@@ -40,12 +41,13 @@ class Trainer:
             model = baseline.architecture.create(
                 self.conf.architecture, num_classes=num_classes
             )
-            model.build((None, None, None, 3))
 
-            if self.conf.base.get("pretrained", False) is not False:
-                self.load_pretrained(
-                    model, self.conf.base.pretrained, self.conf.architecture
-                )
+            model.build({
+                "input_ids": (None, 128),
+                "masked_lm_positions": (None, 20),
+                "segment_ids": (None, 128)
+            })
+
             if self.conf.base.get("resume", False) is True:
                 latest = tf.train.latest_checkpoint(self.conf.base.save_dir)
                 assert (
@@ -56,11 +58,9 @@ class Trainer:
                 log.info(f"Training resumed from {self.initial_epoch} epochs")
 
             optimizer = self.build_optimizer(model=model)
-            loss_fn = baseline.loss.create(self.conf["loss"])
 
             model.compile(
                 optimizer=optimizer,
-                loss=loss_fn,
                 metrics=["accuracy"],
                 steps_per_execution=1 if self.debug else steps_per_epoch,
             )

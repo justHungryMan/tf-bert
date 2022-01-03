@@ -5,10 +5,6 @@ import tensorflow_datasets as tfds
 import os
 import json
 import logging
-from glob import glob
-
-from .preprocess import preprocess
-from .postprocess import postprocess
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,12 +14,12 @@ class Bert_dataset:
         self.data_dir = data_dir
         self.seed = seed
         self.num_devices = num_devices
+        self.files = tf.io.gfile.glob(os.path.join(self.data_dir, '*'))
     
     def get_input_fn(self):
-        files = glob(os.path.join(self.data_dir, '*'))
-        logging.info(f'Data Directory: {self.data_dir}, num_files: {len(files)}')
+        logging.info(f'Data Directory: {self.data_dir}, num_files: {len(self.files)}')
 
-        def parse_record(self, record):
+        def parse_record(record):
             keys_to_features = {
                 "input_ids": tf.io.FixedLenFeature([128], tf.int64),
                 "segment_ids": tf.io.FixedLenFeature([128], tf.int64),
@@ -44,8 +40,8 @@ class Bert_dataset:
 
             return example
     
-        def input_fn(self, input_context):
-            ds = tf.data.Dataset.from_tensor_slices(files)
+        def input_fn(input_context):
+            ds = tf.data.Dataset.from_tensor_slices(self.files)
             buffer_size = 8 * 1024 * 1024
 
             ds = ds.interleave(lambda name: tf.data.TFRecordDataset(name, buffer_size=buffer_size),
@@ -56,7 +52,7 @@ class Bert_dataset:
             if input_context.num_input_pipelines > 1:
                 ds = ds.cache()
             
-            ds = ds.shuffle(16 * local_batch_size, seed=self.seed).repeat()
+            ds = ds.shuffle(16 * local_batch_size, seed=int(self.seed, 0)).repeat()
 
             ds = ds.map(parse_record, num_parallel_calls=tf.data.experimental.AUTOTUNE)
             ds = ds.batch(batch_size=local_batch_size, drop_remainder=True)

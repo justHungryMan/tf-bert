@@ -6,15 +6,10 @@ from tensorflow.keras.layers import (
     Dropout,
     LayerNormalization,
 )
-from .layers import DropPath, Identity
 
 class MaskLM(tf.keras.layers.Layer):
     def __init__(self, vocab_size, num_hiddens, d_model, **kwargs):
         super(MaskLM, self).__init__()
-        self.vocab_size = vocab_size
-        self.num_hiddens = num_hiddens
-        self.d_model = d_model
-
         self.mlp = tf.keras.Sequential([
             tf.keras.layers.Dense(
                 units=num_hiddens,
@@ -32,14 +27,25 @@ class MaskLM(tf.keras.layers.Layer):
     
     def call(self, x, masked_lm_positions):
         x = tf.gather(x, masked_lm_positions, batch_dims=1)
-        batch_size = x.shape[0]
-        num_pred_position = masked_lm_positions.shape[1]
-        pred_positions = masked_lm_positions.reshape(-1)
-        batch_idx = tf.range(0, batch_size)
-        batch_idx = tf.repeat(batch_idx, num_pred_position)
-        masked_X = x[batch_idx, pred_positions]
+        x = self.mlp(x)
 
+        return x
 
+class NspLM(tf.keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super(NspLM, self).__init__()
+
+        self.linear =  tf.keras.layers.Dense(
+            units=2,
+            kernel_initializer=tf.keras.initializers.GlorotNormal(),
+            bias_initializer="zeros",
+            activation='relu'
+        )
+
+    def call(self, x):
+        x = self.linear(x)
+
+        return x
 
 class MultiHeadSelfAttention(tf.keras.layers.Layer):
     def __init__(self, embed_dim, num_heads=8, attn_drop_rate=0.0, proj_drop=0.0):
@@ -88,7 +94,7 @@ class MultiHeadSelfAttention(tf.keras.layers.Layer):
         x = tf.reshape(x, (batch_size, -1, self.num_heads, self.projection_dim))
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
-    def call(self, inputs, mask, training):
+    def call(self, inputs, training):
         batch_size = tf.shape(inputs)[0]
         query = self.query_dense(inputs)
         key = self.key_dense(inputs)
@@ -98,7 +104,7 @@ class MultiHeadSelfAttention(tf.keras.layers.Layer):
         key = self.separate_heads(key, batch_size)
         value = self.separate_heads(value, batch_size)
 
-        attention, weights = self.attention(query, key, value, mask)
+        attention, weights = self.attention(query, key, value)
         attention = tf.transpose(attention, perm=[0, 2, 1, 3])
         concat_attention = tf.reshape(attention, (batch_size, -1, self.embed_dim))
         output = self.combine_heads(concat_attention)
@@ -128,7 +134,6 @@ class TransformerBlock(tf.keras.layers.Layer):
         mlp_dim,
         drop_rate,
         attn_drop_rate,
-        drop_path_rate,
         name="encoderblock",
     ):
         super(TransformerBlock, self).__init__(name=name)
@@ -139,11 +144,7 @@ class TransformerBlock(tf.keras.layers.Layer):
             attn_drop_rate=attn_drop_rate,
             proj_drop=drop_rate,
         )
-        self.drop_path = (
-            DropPath(drop_path_rate)
-            if drop_path_rate > 0.0
-            else Identity(name="identity")
-        )
+
         self.mlp = tf.keras.Sequential(
             [
                 tf.keras.layers.Dense(
@@ -174,12 +175,10 @@ class TransformerBlock(tf.keras.layers.Layer):
     def call(self, inputs, training):
         inputs_norm = self.layernorm1(inputs)
         attn_output = self.att(inputs_norm, training=training)
-        attn_output = self.drop_path(attn_output, training=training)
         out1 = attn_output + inputs
 
         out1_norm = self.layernorm2(out1)
         mlp_output = self.mlp(out1_norm)
-        mlp_output = self.drop_path(mlp_output, training=training)
         return out1 + mlp_output
 
     def get_config(self):
@@ -194,42 +193,34 @@ class TransformerBlock(tf.keras.layers.Layer):
 class Bert(tf.keras.Model):
     def __init__(
         self,
-        image_size,
-        patch_size,
         num_layers,
         num_classes,
         d_model,
         num_heads,
         mlp_dim,
-        representation_size=None,
-        channels=3,
         drop_rate=0.1,
         attn_drop_rate=0.0,
-        drop_path_rate=0.0,
     ):
         super(Bert, self).__init__()
-        num_patches = (image_size // patch_size) ** 2
-        self.patch_dim = channels * patch_size ** 2
 
-        self.patch_size = patch_size
+        self.mlm_loss_tracker = tf.keras.metrics.Mean(name="mlm_loss")
+        self.nsp_loss_tracker = tf.keras.metrics.Mean(name="nsp_loss")
+        self.mlm_acc_tracker = tf.keras.metrics.Accuracy(name="mlm_acc")
+        self.nsp_acc_tracker = tf.keras.metrics.Accuracy(name="nsp_acc")
+
         self.d_model = d_model
         self.num_layers = num_layers
 
-        
 
-        self.embedding = tf.keras.layers.embedding(
+        self.embedding = tf.keras.layers.Embedding(
             input_dim=30_522,
             output_dim=d_model,
-            kernel_initializer=tf.keras.initializers.GlorotNormal(),
-            bias_initializer="zeros",
             name="token_embedding",
         )
 
-        self.segment_embedding = tf.keras.layers.embedding(
+        self.segment_embedding = tf.keras.layers.Embedding(
             input_dim=2,
             output_dim=d_model,
-            kernel_initializer=tf.keras.initializers.GlorotNormal(),
-            bias_initializer="zeros",
             name="segment_embedding",
         )
 
@@ -252,7 +243,6 @@ class Bert(tf.keras.Model):
                 mlp_dim=mlp_dim,
                 drop_rate=drop_rate,
                 attn_drop_rate=attn_drop_rate,
-                drop_path_rate=drop_path_rate * i / (self.num_layers - 1),
                 name=f"encoderblock_{i}",
             )
             for i in range(num_layers)
@@ -260,39 +250,102 @@ class Bert(tf.keras.Model):
 
         self.norm = LayerNormalization(epsilon=1e-6, name="encoder_norm")
 
-        self.mlm = 
-
-
-        self.extract_token = tf.keras.layers.Lambda(
-            lambda x: x[:, 0], name="extract_token"
+        self.mlm = MaskLM(
+            vocab_size=30_522, 
+            num_hiddens=128,
+            d_model=d_model,
+            name="maskLM"
+        )
+        self.hidden = tf.keras.layers.Dense(
+            units=128,
+            kernel_initializer=tf.keras.initializers.GlorotNormal(),
+            bias_initializer="zeros",
+            activation='tanh',
+            name="hidden"
+        )
+        self.nsplm = NspLM(
+            name="nspLM"
         )
 
-        self.representation = (
-            tf.keras.layers.Dense(
-                units=representation_size,
-                activation="tanh",
-                name="pre_logits",
+
+    def train_step(self, data):
+        input_ids = data["input_ids"]
+        masked_lm_ids = data["masked_lm_ids"]
+        masked_lm_positions = data["masked_lm_positions"]
+        masked_lm_weights = data["masked_lm_weights"]
+        next_sentence_labels = data["next_sentence_labels"]
+        segment_ids = data["segment_ids"]
+
+        input_data = {
+            "input_ids": input_ids,
+            "masked_lm_positions": masked_lm_positions,
+            "segment_ids": segment_ids
+        }
+        with tf.GradientTape() as tape:
+            mlm_y_hat, nsp_y_hat = self(input_data, training=True)
+
+            mlm_logits = tf.reshape(mlm_y_hat, [-1, 30_522])
+            mlm_labels = tf.one_hot(
+                tf.multiply(
+                    tf.reshape(
+                        masked_lm_ids, 
+                        [-1]
+                        ), 
+                    tf.reshape(
+                        tf.cast(
+                            masked_lm_weights, 
+                            tf.int32
+                            ), 
+                        [-1]
+                        )
+                    ), 
+                30_522
+                )
+            mlm_loss = tf.nn.softmax_cross_entropy_with_logits(
+                logits=mlm_logits,
+                labels=mlm_labels
             )
-            if representation_size is not None
-            else Identity(name=f"pre_logits")
-        )
+            
+            nsp_labels = tf.squeeze(tf.one_hot(next_sentence_labels, 2), 1)
+            nsp_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=nsp_y_hat, 
+                labels=nsp_labels,
+                )
+            
 
-        self.mlp_head = tf.keras.layers.Dense(
-            units=num_classes,
-            kernel_initializer="zeros",
-            bias_initializer=tf.keras.initializers.Constant(value=-10.0),
-            name="head",
-        )
+            mlm_loss = tf.math.divide_no_nan(tf.math.reduce_mean(mlm_loss), tf.math.reduce_mean(masked_lm_weights))
+            loss = mlm_loss + tf.reduce_sum(nsp_loss)
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
 
-    def call(self, x, training):
-        input_ids, masked_lm_positions, segments_ids= x
-        batch_size = tf.shape(input_ids)[0]
+
+        self.mlm_loss_tracker.update_state(mlm_loss)
+        self.mlm_acc_tracker.update_state(mlm_labels, mlm_logits)
+        self.nsp_loss_tracker.update_state(nsp_loss)
+        self.nsp_acc_tracker.update_state(nsp_labels, nsp_y_hat)
+        return {
+            "mlm_loss": self.mlm_loss_tracker.result(),
+            "mlm_acc": self.mlm_acc_tracker.result(),
+            "nsp_loss": self.nsp_loss_tracker.result(),
+            "nsp_acc": self.nsp_acc_tracker.result()
+            }
+    @property
+    def metrics(self):
+        return [self.mlm_loss_tracker, self.mlm_acc_tracker, self.nsp_loss_tracker, self.nsp_acc_tracker]
+
+    def call(self, data, training):
+        input_ids = data["input_ids"]
+        masked_lm_positions = tf.cast(data["masked_lm_positions"], tf.int32)
+        segment_ids = data["segment_ids"]
+        batch_size = input_ids.shape[0]
         
         token_embedding = self.embedding(input_ids)
-        segment_embedding = self.segment_embedding(segments_ids)
+        segment_embedding = self.segment_embedding(segment_ids)
 
         # B x (max_seq * 3) x d_model
-        x = tf.concat([token_embedding, segment_embedding, tf.cast(self.pos_emb, input_ids.dtype)], axis=1)
+        x = token_embedding + segment_embedding
+        x += self.pos_emb
         x = self.pos_drop(x, training=training)
 
         for layer in self.enc_layers:
@@ -302,13 +355,9 @@ class Bert(tf.keras.Model):
 
         mlm_y_hat = self.mlm(x, masked_lm_positions)
 
-        # First (class token) is used for classification
-        x = self.extract_token(x)
+        nsp_y_hat = self.nsplm(self.hidden(x[:, 0, :]))
 
-        x = self.representation(x)
-
-        x = self.mlp_head(x)
-        return x
+        return mlm_y_hat, nsp_y_hat
 
 
 KNOWN_MODELS = {
@@ -340,9 +389,8 @@ KNOWN_MODELS = {
 
 
 def create_name(arechitecture_name, num_classes, **kwargs):
-    base, patch_size = [l.lower() for l in arechitecture_name.split("-")]
+    base = arechitecture_name.lower()
     return Bert(
-        patch_size=int(patch_size),
         num_classes=num_classes,
         **KNOWN_MODELS[base],
         **kwargs,
